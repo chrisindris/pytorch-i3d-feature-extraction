@@ -1,0 +1,28 @@
+==================================
+
+Let's see how long it takes to run with 0 videos, and with 1 video.
+With zero videos (just going through the model), 5.76s.
+With only the first video: 38.37s
+The first video is 35s long, so this might be about real-time.
+
+
+(venv_pytorch-i3d-feature-extraction) root@6c970ba04703:~/models/pytorch-i3d-feature-extraction# time python extract_features.py --mode rgb --load_model ./models/rgb_imagenet.pt --input_dir /data/i5O/THUMOS14/actionformer_subset_i3d_frames_all/ --output_dir ./out/ --sample_mode center_crop --frequency 4 --usezip --start_index 0 --end_index 0
+
+real	0m5.760s
+user	0m5.785s
+sys	0m6.172s
+(venv_pytorch-i3d-feature-extraction) root@6c970ba04703:~/models/pytorch-i3d-feature-extraction# time python extract_features.py --mode rgb --load_model ./models/rgb_imagenet.pt --input_dir /data/i5O/THUMOS14/actionformer_subset_i3d_frames_all/ --output_dir ./out/ --sample_mode center_crop --frequency 4 --usezip --start_index 0 --end_index 1
+/data/i5O/THUMOS14/actionformer_subset_i3d_frames_all/video_test_0000004
+frame_cnt= 1012
+chunk_size= 16
+extract_features.py:48: DeprecationWarning: ANTIALIAS is deprecated and will be removed in Pillow 10 (2023-07-01). Use LANCZOS or Resampling.LANCZOS instead.
+  data = data.resize((340, 256), Image.ANTIALIAS)
+extract_features.py:205: UserWarning: volatile was removed and now has no effect. Use `with torch.no_grad():` instead.
+  b_data = Variable(b_data.cuda(), volatile=True).float()
+video_test_0000004 done: 1012 / 996, (1, 250, 1024)
+
+real	0m38.373s
+user	0m37.565s
+sys	0m22.400s
+
+===================================

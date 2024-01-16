@@ -1,2 +1,4 @@
 features/*
 __pycache__/*
+venv_pytorch-i3d-feature-extraction/*
+out*
