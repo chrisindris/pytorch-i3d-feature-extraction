@@ -1,6 +1,12 @@
+# time python extract_features.py --mode flow --load_model models/flow_imagenet.pt --input_dir /data/i5O/THUMOS14/actionformer_subset_i3d_flows_all/ --output_dir ./out_flow_imagenet_fps30_oversample_freq4 --sample_mode oversample --frequency 4 --usezip
+
+
 import os
+import pathlib
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
 import sys
 import io
 import zipfile
@@ -13,16 +19,41 @@ from torch.autograd import Variable
 import argparse
 import torchvision
 from PIL import Image
+from pathlib import Path
 
 import numpy as np
+import mmcv
 
 from pytorch_i3d import InceptionI3d
 
 import pdb
 
 
-def load_frame(frame_file, resize=False):
-    data = Image.open(frame_file)
+def build_video_names_list(input_dir, output_dir, start_index, end_index):
+    video_names = sorted(
+        [
+            i
+            for i in os.listdir(input_dir)[start_index:end_index]
+            if (i.startswith("video") or i.startswith("out"))
+            and (
+                os.path.exists(os.path.join(input_dir, i, "img.zip"))
+                or os.path.exists(os.path.join(input_dir, i, "flow_0.flo"))
+            )
+            and i + "-flow.npz" not in os.listdir(output_dir)
+        ]
+    )
+    return video_names
+
+
+def load_frame(frame_file, resize=False, flow=False, direction="y"):
+    if flow:
+        data = mmcv.flowread(frame_file)
+        data = data[:, :, int(direction == "y")]
+        data = Image.fromarray(data)
+    else:
+        data = Image.open(frame_file)
+
+    data = data.resize((340, 256), Image.ANTIALIAS)
 
     assert data.size[1] == 256
     assert data.size[0] == 340
@@ -32,7 +63,13 @@ def load_frame(frame_file, resize=False):
 
     data = np.array(data)
     data = data.astype(float)
-    data = (data * 2 / 255) - 1
+
+    if flow:
+        data = data - data.min()
+        data = data / data.max()
+        data = (2 * data) - 1
+    else:
+        data = (data * 2 / 255) - 1
 
     assert data.max() <= 1.0
     assert data.min() >= -1.0
@@ -40,9 +77,17 @@ def load_frame(frame_file, resize=False):
     return data
 
 
-def load_zipframe(zipdata, name, resize=False):
+def load_zipframe(zipdata, name, resize=False, flow=False, direction="x"):
     stream = zipdata.read(name)
-    data = Image.open(io.BytesIO(stream))
+
+    # print("load frame")
+
+    if flow:
+        data = mmcv.flow_from_bytes(stream)
+        data = data[:, :, int(direction == "y")]
+        data = Image.fromarray(data)
+    else:
+        data = Image.open(io.BytesIO(stream))
 
     # print("data.size=", data.size)
     data = data.resize((340, 256), Image.ANTIALIAS)
@@ -55,7 +100,13 @@ def load_zipframe(zipdata, name, resize=False):
 
     data = np.array(data)
     data = data.astype(float)
-    data = (data * 2 / 255) - 1
+
+    if flow:
+        data = data - data.min()
+        data = data / data.max()
+        data = (2 * data) - 1
+    else:
+        data = (data * 2 / 255) - 1
 
     assert data.max() <= 1.0
     assert data.min() >= -1.0
@@ -122,9 +173,7 @@ def load_ziprgb_batch(rgb_zipdata, rgb_files, frame_indices, resize=False):
     return batch_data
 
 
-def load_flow_batch(
-    frames_dir, flow_x_files, flow_y_files, frame_indices, resize=False
-):
+def load_flow_batch(frames_dir, flow_files, frame_indices, resize=False):
     if resize:
         batch_data = np.zeros(frame_indices.shape + (224, 224, 2))
     else:
@@ -133,21 +182,25 @@ def load_flow_batch(
     for i in range(frame_indices.shape[0]):
         for j in range(frame_indices.shape[1]):
             batch_data[i, j, :, :, 0] = load_frame(
-                os.path.join(frames_dir, flow_x_files[frame_indices[i][j]]), resize
+                os.path.join(frames_dir, flow_files[frame_indices[i][j]]),
+                resize,
+                flow=True,
+                direction="x",
             )
 
             batch_data[i, j, :, :, 1] = load_frame(
-                os.path.join(frames_dir, flow_y_files[frame_indices[i][j]]), resize
+                os.path.join(frames_dir, flow_files[frame_indices[i][j]]),
+                resize,
+                flow=True,
+                direction="y",
             )
 
     return batch_data
 
 
 def load_zipflow_batch(
-    flow_x_zipdata,
-    flow_y_zipdata,
-    flow_x_files,
-    flow_y_files,
+    flow_zipdata,
+    flow_files,
     frame_indices,
     resize=False,
 ):
@@ -159,17 +212,26 @@ def load_zipflow_batch(
     for i in range(frame_indices.shape[0]):
         for j in range(frame_indices.shape[1]):
             batch_data[i, j, :, :, 0] = load_zipframe(
-                flow_x_zipdata, flow_x_files[frame_indices[i][j]], resize
+                flow_zipdata,
+                flow_files[frame_indices[i][j]],
+                resize,
+                flow=True,
+                direction="x",
             )
 
             batch_data[i, j, :, :, 1] = load_zipframe(
-                flow_y_zipdata, flow_y_files[frame_indices[i][j]], resize
+                flow_zipdata,
+                flow_files[frame_indices[i][j]],
+                resize,
+                flow=True,
+                direction="y",
             )
 
     return batch_data
 
 
 def run(
+    args,
     mode="rgb",
     load_model="",
     sample_mode="oversample",
@@ -181,6 +243,12 @@ def run(
     start_index=0,
     end_index=412,
 ):
+    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    print(args)
+    # args.batch_size = 500
+    # print(args)
+
     chunk_size = 16
 
     assert mode in ["rgb", "flow"]
@@ -210,15 +278,30 @@ def run(
 
     # sorted to fix the order, and not in to specify that we don't want the same ones twice
     # video_names = sorted([i for i in os.listdir(input_dir) if i[0] == 'v'])
-    video_names = sorted(
-        [
-            i
-            for i in os.listdir(input_dir)[start_index:end_index]
-            if i[0] == "v" and i + "-rgb.npz" not in os.listdir(output_dir)
-        ]
-    )
+    # video_names = sorted(
+    #    [
+    #        i
+    #        for i in os.listdir(input_dir)[start_index:end_index]
+    #        if (i.startswith("video") or i.startswith("out"))
+    #        and (
+    #            os.path.exists(os.path.join(input_dir, i, "img.zip"))
+    #            or os.path.exists(os.path.join(input_dir, i, "flow_0.flo"))
+    #        )
+    #        and i + "-flow.npz" not in os.listdir(output_dir)
+    #    ]
+    # )
 
-    for video_name in video_names:
+    while len(build_video_names_list(input_dir, output_dir, start_index, end_index)):
+        video_names = build_video_names_list(
+            input_dir, output_dir, start_index, end_index
+        )
+
+        video_name = video_names[0]
+        usezip = os.path.exists(os.path.join(input_dir, video_name, "img.zip"))
+
+        print(video_names)
+        print(video_name)
+
         save_file = "{}-{}.npz".format(video_name, mode)
         if save_file in os.listdir(output_dir):
             continue
@@ -238,31 +321,15 @@ def run(
 
         else:
             if usezip:
-                flow_x_zipdata = zipfile.ZipFile(
-                    os.path.join(frames_dir, "flow_x.zip"), "r"
-                )
-                flow_x_files = [
-                    i for i in flow_x_zipdata.namelist() if i.startswith("x_")
-                ]
+                print(os.path.join(frames_dir, "img.zip"))
+                flow_zipdata = zipfile.ZipFile(os.path.join(frames_dir, "img.zip"), "r")
+                flow_files = [i for i in flow_zipdata.namelist() if i.endswith(".flo")]
 
-                flow_y_zipdata = zipfile.ZipFile(
-                    os.path.join(frames_dir, "flow_y.zip"), "r"
-                )
-                flow_y_files = [
-                    i for i in flow_y_zipdata.namelist() if i.startswith("y_")
-                ]
             else:
-                flow_x_files = [
-                    i for i in os.listdir(frames_dir) if i.startswith("flow_x")
-                ]
-                flow_y_files = [
-                    i for i in os.listdir(frames_dir) if i.startswith("flow_y")
-                ]
+                flow_files = [i for i in os.listdir(frames_dir) if i.endswith(".flo")]
 
-            flow_x_files.sort()
-            flow_y_files.sort()
-            assert len(flow_y_files) == len(flow_x_files)
-            frame_cnt = len(flow_y_files)
+            flow_files.sort()
+            frame_cnt = len(flow_files)
 
         # clipped_length = (frame_cnt // chunk_size) * chunk_size   # Cut frames
 
@@ -309,18 +376,15 @@ def run(
             else:
                 if usezip:
                     batch_data = load_zipflow_batch(
-                        flow_x_zipdata,
-                        flow_y_zipdata,
-                        flow_x_files,
-                        flow_y_files,
+                        flow_zipdata,
+                        flow_files,
                         frame_indices[batch_id],
                         require_resize,
                     )
                 else:
                     batch_data = load_flow_batch(
                         frames_dir,
-                        flow_x_files,
-                        flow_y_files,
+                        flow_files,
                         frame_indices[batch_id],
                         require_resize,
                     )
@@ -329,7 +393,7 @@ def run(
                 batch_data_ten_crop = oversample_data(batch_data)
 
                 for i in range(10):
-                    pdb.set_trace()
+                    # pdb.set_trace()
                     assert batch_data_ten_crop[i].shape[-2] == 224
                     assert batch_data_ten_crop[i].shape[-3] == 224
                     full_features[i].append(forward_batch(batch_data_ten_crop[i]))
@@ -383,6 +447,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run(
+        args,
         mode=args.mode,
         load_model=args.load_model,
         sample_mode=args.sample_mode,
