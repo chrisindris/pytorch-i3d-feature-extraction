@@ -1,11 +1,11 @@
 # time python extract_features.py --mode flow --load_model models/flow_imagenet.pt --input_dir /data/i5O/THUMOS14/actionformer_subset_i3d_flows_all/ --output_dir ./out_flow_imagenet_fps30_oversample_freq4 --sample_mode oversample --frequency 4 --usezip
 
-
 import os
 import pathlib
+import shutil
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import sys
 import io
@@ -25,6 +25,9 @@ import numpy as np
 import mmcv
 
 from pytorch_i3d import InceptionI3d
+
+import subprocess
+import time
 
 import pdb
 
@@ -270,7 +273,10 @@ def run(
         b_data = b_data.transpose([0, 4, 1, 2, 3])
         b_data = torch.from_numpy(b_data)  # b,c,t,h,w  # 40x3x16x224x224
 
-        b_data = Variable(b_data.cuda(), volatile=True).float()
+        # b_data = Variable(b_data.cuda(), volatile=True).float()
+        with torch.no_grad():
+            b_data = b_data.cuda().float()
+
         b_features = i3d.extract_features(b_data)
 
         b_features = b_features.data.cpu().numpy()[:, :, 0, 0, 0]
@@ -290,11 +296,24 @@ def run(
     #        and i + "-flow.npz" not in os.listdir(output_dir)
     #    ]
     # )
-
-    while len(build_video_names_list(input_dir, output_dir, start_index, end_index)):
+    counter = 0
+    while (
+        True
+    ):  # len(build_video_names_list(input_dir, output_dir, start_index, end_index)):
         video_names = build_video_names_list(
             input_dir, output_dir, start_index, end_index
         )
+
+        if video_names == []:
+            print("waiting, counter =", counter)
+            if counter >= 45:
+                break
+            else:
+                counter += 1
+                time.sleep(60)
+                continue
+        else:
+            counter = 0
 
         video_name = video_names[0]
         usezip = os.path.exists(os.path.join(input_dir, video_name, "img.zip"))
@@ -424,6 +443,11 @@ def run(
                 video_name, frame_cnt, clipped_length, full_features.shape
             )
         )
+
+        if usezip:
+            os.remove(os.path.join(input_dir, video_name, "img.zip"))
+        else:
+            shutil.rmtree(os.path.join(input_dir, video_name))
 
 
 if __name__ == "__main__":
